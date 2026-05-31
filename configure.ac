@@ -7,19 +7,29 @@ AC_PROG_CPP
 AC_PROG_INSTALL
 AC_PROG_LN_S
 AC_PROG_MAKE_SET
-AC_PROG_LIBTOOL
+AC_PROG_RANLIB
 export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
 
 PKG_CHECK_MODULES(GLIB, [glib-2.0])
 PKG_CHECK_MODULES(BSD, [libbsd >= 0.2])
-PKG_CHECK_MODULES(FUSE, [fuse >= 2.2])
+PKG_CHECK_MODULES(FUSE, [fuse3 >= 3.0],
+		  [AC_DEFINE([HAVE_FUSE3], [1], [Define if building with libfuse3])
+		   FUSE_API_CFLAGS="-DFUSE_USE_VERSION=31"],
+		  [PKG_CHECK_MODULES(FUSE, [fuse >= 2.6])
+		   FUSE_API_CFLAGS="-DFUSE_USE_VERSION=26"])
+AC_SUBST([FUSE_API_CFLAGS])
 
-LIBCURL_CHECK_CONFIG([yes], [7.17.0], [], [AC_MSG_ERROR(["libcurl not found"])])
-if test "$libcurl_protocol_FTP" != yes; then
-	AC_MSG_ERROR(["We need libcurl with support for FTP protocol."])
-fi
+PKG_CHECK_MODULES(LIBCURL_PC, [libcurl >= 7.17.0],
+		  [LIBCURL_CPPFLAGS="$LIBCURL_PC_CFLAGS"
+		   LIBCURL="$LIBCURL_PC_LIBS"
+		   libcurl_protocol_FTP=yes],
+		  [LIBCURL_CHECK_CONFIG([yes], [7.17.0], [],
+					[AC_MSG_ERROR(["libcurl not found"])])
+		   if test "$libcurl_protocol_FTP" != yes; then
+			AC_MSG_ERROR(["We need libcurl with support for FTP protocol."])
+		   fi])
 
-CFLAGS="$CFLAGS -Wall -W -Wno-sign-compare -D_REENTRANT $GLIB_CFLAGS $FUSE_CFLAGS $LIBCURL_CPPFLAGS $LIBBSD_CFLAGS"
+CFLAGS="$CFLAGS -Wall -W -Wno-sign-compare -D_REENTRANT $FUSE_API_CFLAGS $GLIB_CFLAGS $FUSE_CFLAGS $LIBCURL_CPPFLAGS $LIBBSD_CFLAGS"
 LIBS="$GLIB_LIBS $FUSE_LIBS $LIBCURL $BSD_LIBS"
 
 have_fuse_opt_parse=no

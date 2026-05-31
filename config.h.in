@@ -6,14 +6,14 @@
 /* Define to 1 if your system has a working `chown' function. */
 #undef HAVE_CHOWN
 
-/* Define to 1 if you have the <dlfcn.h> header file. */
-#undef HAVE_DLFCN_H
-
 /* Define to 1 if you have the <fcntl.h> header file. */
 #undef HAVE_FCNTL_H
 
 /* Define to 1 if you have the `ftruncate' function. */
 #undef HAVE_FTRUNCATE
+
+/* Define if building with libfuse3 */
+#undef HAVE_FUSE3
 
 /* Define if you have the iconv() function. */
 #undef HAVE_ICONV
@@ -173,9 +173,6 @@
 
 /* Defined if libcurl supports TELNET */
 #undef LIBCURL_PROTOCOL_TELNET
-
-/* Define to the sub-directory where libtool stores uninstalled libraries. */
-#undef LT_OBJDIR
 
 /* Name of package */
 #undef PACKAGE

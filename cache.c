@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <glib.h>
 #include <pthread.h>
+#include <utime.h>
 
 struct cache {
     int on;
@@ -40,10 +41,16 @@ struct node {
 
 struct fuse_cache_dirhandle {
     const char *path;
-    fuse_dirh_t h;
-    fuse_dirfil_t filler;
+    curlftpfs_dirh_t h;
+    curlftpfs_dirfil_t filler;
     GPtrArray *dir;
 };
+
+#if FUSE_VERSION >= 30
+#define CACHE_FILL(ch, name, stbuf) ((ch)->filler((ch)->h, (name), (stbuf), 0, 0))
+#else
+#define CACHE_FILL(ch, name, stbuf) ((ch)->filler((ch)->h, (name), 0, 0))
+#endif
 
 static void free_node(gpointer node_)
 {
@@ -222,7 +229,11 @@ static int cache_getattr(const char *path, struct stat *stbuf)
 {
     int err = cache_get_attr(path, stbuf);
     if (err == -EAGAIN) {
+#if FUSE_VERSION >= 30
+        err = cache.next_oper->oper.getattr(path, stbuf, NULL);
+#else
         err = cache.next_oper->oper.getattr(path, stbuf);
+#endif
         if (!err)
             cache_add_attr(path, stbuf);
         else if (err == -ENOENT)
@@ -230,6 +241,15 @@ static int cache_getattr(const char *path, struct stat *stbuf)
     }
     return err;
 }
+
+#if FUSE_VERSION >= 30
+static int cache_getattr_fuse3(const char *path, struct stat *stbuf,
+                               struct fuse_file_info *fi)
+{
+    (void) fi;
+    return cache_getattr(path, stbuf);
+}
+#endif
 
 static int cache_readlink(const char *path, char *buf, size_t size)
 {
@@ -258,7 +278,7 @@ static int cache_readlink(const char *path, char *buf, size_t size)
 static int cache_dirfill(fuse_cache_dirh_t ch, const char *name,
                          const struct stat *stbuf)
 {
-    int err = ch->filler(ch->h, name, 0, 0);
+    int err = CACHE_FILL(ch, name, stbuf);
     if (!err) {
         char *fullpath;
         g_ptr_array_add(ch->dir, g_strdup(name));
@@ -269,7 +289,8 @@ static int cache_dirfill(fuse_cache_dirh_t ch, const char *name,
     return err;
 }
 
-static int cache_getdir(const char *path, fuse_dirh_t h, fuse_dirfil_t filler)
+static int cache_getdir(const char *path, curlftpfs_dirh_t h,
+                        curlftpfs_dirfil_t filler)
 {
     struct fuse_cache_dirhandle ch;
     int err;
@@ -282,7 +303,11 @@ static int cache_getdir(const char *path, fuse_dirh_t h, fuse_dirfil_t filler)
         time_t now = time(NULL);
         if (node->dir_valid - now >= 0) {
             for(dir = node->dir; *dir != NULL; dir++)
+#if FUSE_VERSION >= 30
+                filler(h, *dir, 0, 0, 0);
+#else
                 filler(h, *dir, 0, 0);
+#endif
             pthread_mutex_unlock(&cache.lock);
             return 0;
         }
@@ -308,17 +333,40 @@ static int cache_unity_dirfill(fuse_cache_dirh_t ch, const char *name,
                                const struct stat *stbuf)
 {
     (void) stbuf;
-    return ch->filler(ch->h, name, 0, 0);
+    return CACHE_FILL(ch, name, stbuf);
 }
 
-static int cache_unity_getdir(const char *path, fuse_dirh_t h,
-                              fuse_dirfil_t filler)
+static int cache_unity_getdir(const char *path, curlftpfs_dirh_t h,
+                              curlftpfs_dirfil_t filler)
 {
     struct fuse_cache_dirhandle ch;
     ch.h = h;
     ch.filler = filler;
     return cache.next_oper->cache_getdir(path, &ch, cache_unity_dirfill);
 }
+
+#if FUSE_VERSION >= 30
+static int cache_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+                         off_t offset, struct fuse_file_info *fi,
+                         enum fuse_readdir_flags flags)
+{
+    (void) offset;
+    (void) fi;
+    (void) flags;
+    return cache_getdir(path, buf, filler);
+}
+
+static int cache_unity_readdir(const char *path, void *buf,
+                               fuse_fill_dir_t filler, off_t offset,
+                               struct fuse_file_info *fi,
+                               enum fuse_readdir_flags flags)
+{
+    (void) offset;
+    (void) fi;
+    (void) flags;
+    return cache_unity_getdir(path, buf, filler);
+}
+#endif
 
 static int cache_mknod(const char *path, mode_t mode, dev_t rdev)
 {
@@ -362,11 +410,25 @@ static int cache_symlink(const char *from, const char *to)
 
 static int cache_rename(const char *from, const char *to)
 {
+#if FUSE_VERSION >= 30
+    int err = cache.next_oper->oper.rename(from, to, 0);
+#else
     int err = cache.next_oper->oper.rename(from, to);
+#endif
     if (!err)
         cache_do_rename(from, to);
     return err;
 }
+
+#if FUSE_VERSION >= 30
+static int cache_rename_fuse3(const char *from, const char *to,
+                              unsigned int flags)
+{
+    if (flags)
+        return -EINVAL;
+    return cache_rename(from, to);
+}
+#endif
 
 static int cache_link(const char *from, const char *to)
 {
@@ -380,28 +442,74 @@ static int cache_link(const char *from, const char *to)
 
 static int cache_chmod(const char *path, mode_t mode)
 {
+#if FUSE_VERSION >= 30
+    int err = cache.next_oper->oper.chmod(path, mode, NULL);
+#else
     int err = cache.next_oper->oper.chmod(path, mode);
+#endif
     if (!err)
         cache_invalidate(path);
     return err;
 }
+
+#if FUSE_VERSION >= 30
+static int cache_chmod_fuse3(const char *path, mode_t mode,
+                             struct fuse_file_info *fi)
+{
+    (void) fi;
+    return cache_chmod(path, mode);
+}
+#endif
 
 static int cache_chown(const char *path, uid_t uid, gid_t gid)
 {
+#if FUSE_VERSION >= 30
+    int err = cache.next_oper->oper.chown(path, uid, gid, NULL);
+#else
     int err = cache.next_oper->oper.chown(path, uid, gid);
+#endif
     if (!err)
         cache_invalidate(path);
     return err;
 }
+
+#if FUSE_VERSION >= 30
+static int cache_chown_fuse3(const char *path, uid_t uid, gid_t gid,
+                             struct fuse_file_info *fi)
+{
+    (void) fi;
+    return cache_chown(path, uid, gid);
+}
+#endif
 
 static int cache_truncate(const char *path, off_t size)
 {
+#if FUSE_VERSION >= 30
+    int err = cache.next_oper->oper.truncate(path, size, NULL);
+#else
     int err = cache.next_oper->oper.truncate(path, size);
+#endif
     if (!err)
         cache_invalidate(path);
     return err;
 }
 
+#if FUSE_VERSION >= 30
+static int cache_truncate_fuse3(const char *path, off_t size,
+                                struct fuse_file_info *fi)
+{
+    int err;
+    if (fi && cache.next_oper->oper.truncate) {
+        err = cache.next_oper->oper.truncate(path, size, fi);
+        if (!err)
+            cache_invalidate(path);
+        return err;
+    }
+    return cache_truncate(path, size);
+}
+#endif
+
+#if FUSE_VERSION < 30
 static int cache_utime(const char *path, struct utimbuf *buf)
 {
     int err = cache.next_oper->oper.utime(path, buf);
@@ -409,6 +517,16 @@ static int cache_utime(const char *path, struct utimbuf *buf)
         cache_invalidate(path);
     return err;
 }
+#else
+static int cache_utimens(const char *path, const struct timespec tv[2],
+                         struct fuse_file_info *fi)
+{
+    int err = cache.next_oper->oper.utimens(path, tv, fi);
+    if (!err)
+        cache_invalidate(path);
+    return err;
+}
+#endif
 
 static int cache_write(const char *path, const char *buf, size_t size,
                        off_t offset, struct fuse_file_info *fi)
@@ -428,7 +546,9 @@ static int cache_create(const char *path, mode_t mode,
         cache_invalidate_dir(path);
     return err;
 }
+#endif
 
+#if FUSE_VERSION >= 25 && FUSE_VERSION < 30
 static int cache_ftruncate(const char *path, off_t size,
                            struct fuse_file_info *fi)
 {
@@ -461,7 +581,11 @@ static void cache_unity_fill(struct fuse_cache_operations *oper,
 #endif
     cache_oper->getattr     = oper->oper.getattr;
     cache_oper->readlink    = oper->oper.readlink;
+#if FUSE_VERSION >= 30
+    cache_oper->readdir     = cache_unity_readdir;
+#else
     cache_oper->getdir      = cache_unity_getdir;
+#endif
     cache_oper->mknod       = oper->oper.mknod;
     cache_oper->mkdir       = oper->oper.mkdir;
     cache_oper->symlink     = oper->oper.symlink;
@@ -472,7 +596,11 @@ static void cache_unity_fill(struct fuse_cache_operations *oper,
     cache_oper->chmod       = oper->oper.chmod;
     cache_oper->chown       = oper->oper.chown;
     cache_oper->truncate    = oper->oper.truncate;
+#if FUSE_VERSION >= 30
+    cache_oper->utimens     = oper->oper.utimens;
+#else
     cache_oper->utime       = oper->oper.utime;
+#endif
     cache_oper->open        = oper->oper.open;
     cache_oper->read        = oper->oper.read;
     cache_oper->write       = oper->oper.write;
@@ -484,10 +612,12 @@ static void cache_unity_fill(struct fuse_cache_operations *oper,
     cache_oper->getxattr    = oper->oper.getxattr;
     cache_oper->listxattr   = oper->oper.listxattr;
     cache_oper->removexattr = oper->oper.removexattr;
-#if FUSE_VERSION >= 25
+#if FUSE_VERSION >= 25 && FUSE_VERSION < 30
     cache_oper->create      = oper->oper.create;
     cache_oper->ftruncate   = oper->oper.ftruncate;
     cache_oper->fgetattr    = oper->oper.fgetattr;
+#elif FUSE_VERSION >= 30
+    cache_oper->create      = oper->oper.create;
 #endif
 }
 
@@ -498,25 +628,65 @@ struct fuse_operations *cache_init(struct fuse_cache_operations *oper)
 
     cache_unity_fill(oper, &cache_oper);
     if (cache.on) {
-        cache_oper.getattr  = oper->oper.getattr ? cache_getattr : NULL;
+        cache_oper.getattr  = oper->oper.getattr ?
+#if FUSE_VERSION >= 30
+            cache_getattr_fuse3
+#else
+            cache_getattr
+#endif
+            : NULL;
         cache_oper.readlink = oper->oper.readlink ? cache_readlink : NULL;
+#if FUSE_VERSION >= 30
+        cache_oper.readdir  = oper->cache_getdir ? cache_readdir : NULL;
+#else
         cache_oper.getdir   = oper->cache_getdir ? cache_getdir : NULL;
+#endif
         cache_oper.mknod    = oper->oper.mknod ? cache_mknod : NULL;
         cache_oper.mkdir    = oper->oper.mkdir ? cache_mkdir : NULL;
         cache_oper.symlink  = oper->oper.symlink ? cache_symlink : NULL;
         cache_oper.unlink   = oper->oper.unlink ? cache_unlink : NULL;
         cache_oper.rmdir    = oper->oper.rmdir ? cache_rmdir : NULL;
-        cache_oper.rename   = oper->oper.rename ? cache_rename : NULL;
+        cache_oper.rename   = oper->oper.rename ?
+#if FUSE_VERSION >= 30
+            cache_rename_fuse3
+#else
+            cache_rename
+#endif
+            : NULL;
         cache_oper.link     = oper->oper.link ? cache_link : NULL;
-        cache_oper.chmod    = oper->oper.chmod ? cache_chmod : NULL;
-        cache_oper.chown    = oper->oper.chown ? cache_chown : NULL;
-        cache_oper.truncate = oper->oper.truncate ? cache_truncate : NULL;
+        cache_oper.chmod    = oper->oper.chmod ?
+#if FUSE_VERSION >= 30
+            cache_chmod_fuse3
+#else
+            cache_chmod
+#endif
+            : NULL;
+        cache_oper.chown    = oper->oper.chown ?
+#if FUSE_VERSION >= 30
+            cache_chown_fuse3
+#else
+            cache_chown
+#endif
+            : NULL;
+        cache_oper.truncate = oper->oper.truncate ?
+#if FUSE_VERSION >= 30
+            cache_truncate_fuse3
+#else
+            cache_truncate
+#endif
+            : NULL;
+#if FUSE_VERSION >= 30
+        cache_oper.utimens  = oper->oper.utimens ? cache_utimens : NULL;
+#else
         cache_oper.utime    = oper->oper.utime ? cache_utime : NULL;
+#endif
         cache_oper.write    = oper->oper.write ? cache_write : NULL;
 #if FUSE_VERSION >= 25
         cache_oper.create   = oper->oper.create ? cache_create : NULL;
+#if FUSE_VERSION < 30
         cache_oper.ftruncate = oper->oper.ftruncate ? cache_ftruncate : NULL;
         cache_oper.fgetattr = oper->oper.fgetattr ? cache_fgetattr : NULL;
+#endif
 #endif
         pthread_mutex_init(&cache.lock, NULL);
         cache.table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,

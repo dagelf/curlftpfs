@@ -5,14 +5,14 @@ DIST_SUBDIRS = $(SUBDIRS) tests
 
 LIBICONV = @LIBICONV@
 
-AM_CPPFLAGS = -DFUSE_USE_VERSION=26
+AM_CPPFLAGS = @FUSE_API_CFLAGS@
 AM_LDFLAGS = $(LIBICONV)
 
 bin_PROGRAMS = curlftpfs
 
 curlftpfs_SOURCES = ftpfs.c
 if FUSE_OPT_COMPAT
-curlftpfs_LDADD = libcurlftpfs.a compat/libcompat.la
+curlftpfs_LDADD = libcurlftpfs.a compat/libcompat.a
 else
 curlftpfs_LDADD = libcurlftpfs.a
 endif

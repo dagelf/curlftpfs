@@ -375,6 +375,14 @@ static int ftpfs_getattr(const char* path_tmp, struct stat* sbuf) {
   return 0;
 }
 
+#if FUSE_VERSION >= 30
+static int ftpfs_getattr_fuse3(const char* path, struct stat* sbuf,
+                               struct fuse_file_info* fi) {
+  (void) fi;
+  return ftpfs_getattr(path, sbuf);
+}
+#endif
+
 
 static int check_running() {
   int running_handles = 0;
@@ -1053,11 +1061,30 @@ static int ftpfs_ftruncate(const char * path , off_t offset, struct fuse_file_in
   return op_return(-EPERM, "ftpfs_ftruncate");
 }
 
+#if FUSE_VERSION >= 30
+static int ftpfs_truncate_fuse3(const char* path, off_t offset,
+                                struct fuse_file_info* fi) {
+  if (fi)
+    return ftpfs_ftruncate(path, offset, fi);
+  return ftpfs_truncate(path, offset);
+}
+#endif
+
+#if FUSE_VERSION < 30
 static int ftpfs_utime(const char* path, struct utimbuf* time) {
   (void) path;
   (void) time;
   return op_return(0, "ftpfs_utime");
 }
+#else
+static int ftpfs_utimens(const char* path, const struct timespec tv[2],
+                         struct fuse_file_info* fi) {
+  (void) path;
+  (void) tv;
+  (void) fi;
+  return op_return(0, "ftpfs_utimens");
+}
+#endif
 
 static int ftpfs_rmdir(const char* path) {
   int err = 0;
@@ -1359,6 +1386,27 @@ static int ftpfs_rename(const char* from, const char* to) {
   return op_return(err, "ftpfs_rename");
 }
 
+#if FUSE_VERSION >= 30
+static int ftpfs_rename_fuse3(const char* from, const char* to,
+                              unsigned int flags) {
+  if (flags)
+    return -EINVAL;
+  return ftpfs_rename(from, to);
+}
+
+static int ftpfs_chmod_fuse3(const char* path, mode_t mode,
+                             struct fuse_file_info* fi) {
+  (void) fi;
+  return ftpfs_chmod(path, mode);
+}
+
+static int ftpfs_chown_fuse3(const char* path, uid_t uid, gid_t gid,
+                             struct fuse_file_info* fi) {
+  (void) fi;
+  return ftpfs_chown(path, uid, gid);
+}
+#endif
+
 static int ftpfs_readlink(const char *path, char *linkbuf, size_t size) {
   int err;
   CURLcode curl_res;
@@ -1425,18 +1473,30 @@ static int ftpfs_statfs(const char *path, struct statfs *buf)
 static struct fuse_cache_operations ftpfs_oper = {
   .oper = {
 //    .init       = ftpfs_init,
+#if FUSE_VERSION >= 30
+    .getattr    = ftpfs_getattr_fuse3,
+#else
     .getattr    = ftpfs_getattr,
+#endif
     .readlink   = ftpfs_readlink,
     .mknod      = ftpfs_mknod,
     .mkdir      = ftpfs_mkdir,
 //    .symlink    = ftpfs_symlink,
     .unlink     = ftpfs_unlink,
     .rmdir      = ftpfs_rmdir,
+#if FUSE_VERSION >= 30
+    .rename     = ftpfs_rename_fuse3,
+    .chmod      = ftpfs_chmod_fuse3,
+    .chown      = ftpfs_chown_fuse3,
+    .truncate   = ftpfs_truncate_fuse3,
+    .utimens    = ftpfs_utimens,
+#else
     .rename     = ftpfs_rename,
     .chmod      = ftpfs_chmod,
     .chown      = ftpfs_chown,
     .truncate   = ftpfs_truncate,
     .utime      = ftpfs_utime,
+#endif
     .open       = ftpfs_open,
     .flush      = ftpfs_flush,
     .fsync      = ftpfs_fsync,
@@ -1446,8 +1506,10 @@ static struct fuse_cache_operations ftpfs_oper = {
     .statfs     = ftpfs_statfs,
 #if FUSE_VERSION >= 25
     .create     = ftpfs_create,
+#if FUSE_VERSION < 30
     .ftruncate  = ftpfs_ftruncate,
 //    .fgetattr   = ftpfs_fgetattr,
+#endif
 #endif
   },
   .cache_getdir = ftpfs_getdir,

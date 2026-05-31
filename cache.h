@@ -16,6 +16,14 @@
 #define FUSE_VERSION (FUSE_MAJOR_VERSION * 10 + FUSE_MINOR_VERSION)
 #endif
 
+#if FUSE_VERSION >= 30
+typedef void *curlftpfs_dirh_t;
+typedef fuse_fill_dir_t curlftpfs_dirfil_t;
+#else
+typedef fuse_dirh_t curlftpfs_dirh_t;
+typedef fuse_dirfil_t curlftpfs_dirfil_t;
+#endif
+
 #define DEFAULT_CACHE_TIMEOUT 10
 #define MAX_CACHE_SIZE 10000
 #define MIN_CACHE_CLEAN_INTERVAL 5

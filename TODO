@@ -1,0 +1,148 @@
+Security audit and roadmap
+===========================
+
+Scope
+-----
+
+This audit reviewed the current curlftpfs codebase with focus on input that can
+come from mounted paths, FTP directory listings, command-line options, netrc
+credentials, TLS options, libcurl usage, and C memory handling. It is not a
+full fuzzing campaign or protocol-level penetration test.
+
+Findings
+--------
+
+1. High: FTP command injection through path-derived command strings
+
+   Functions such as ftpfs_chmod, ftpfs_chown, ftpfs_rmdir, ftpfs_mkdir,
+   ftpfs_unlink, and ftpfs_rename build raw FTP commands with g_strdup_printf
+   from filenames or paths and send them through CURLOPT_POSTQUOTE. The current
+   code does not reject CR, LF, or other command separators in path components.
+   A hostile local filename or remote path mapping could inject additional FTP
+   commands.
+
+   Roadmap:
+   - Add one shared FTP command argument validator that rejects CR, LF, NUL,
+     and control characters before constructing RNFR/RNTO/DELE/RMD/MKD/SITE
+     commands.
+   - Prefer libcurl operations or URL-based FTP actions where possible instead
+     of manually formatting command strings.
+   - Add unit tests for filenames containing CR, LF, leading dash, spaces,
+     percent encoding, non-ASCII bytes, and path traversal-like components.
+
+2. High: Unsafe or obsolete TLS controls remain user-accessible
+
+   The options table still exposes sslv3, no_verify_peer, and
+   no_verify_hostname. set_common_curl_stuff also uses old libcurl FTP SSL
+   option names and sets SSL_VERIFYHOST to 1 for no_verify_hostname, which is
+   obsolete libcurl behavior and should be treated as insecure.
+
+   Roadmap:
+   - Remove or hard-disable SSLv3.
+   - Keep verification enabled by default, document the risk of opt-out flags,
+     and require an explicit "insecure" naming convention for any bypass.
+   - Use modern libcurl options such as CURLOPT_USE_SSL and
+     CURLUSESSL_CONTROL/ALL/TRY where available.
+   - Add tests or compile-time checks for the expected SSL_VERIFYHOST values.
+
+3. High: Credentials can be exposed through process arguments and debug output
+
+   The user=, proxy_user=, and pass= options can contain secrets directly in
+   argv. libcurl NETRC is enabled optionally, and verbose mode can make libcurl
+   emit protocol details. Passwords read with readpassphrase are appended to the
+   user string and remain in heap memory until process exit; temporary password
+   buffers are not explicitly zeroed.
+
+   Roadmap:
+   - Prefer prompting, netrc, or file descriptor based secret input over argv.
+   - Redact credentials from diagnostics and any future logging.
+   - Explicitly zero temporary password buffers and heap copies before free.
+   - Document secure credential usage in README and the man page.
+
+4. Medium: Directory listing parser uses fixed-size buffers and unchecked
+   allocations
+
+   parse_dir allocates 1024-byte file/link buffers and copies symlink targets
+   with strcpy after parsing a 1023-character field. Several malloc results are
+   not checked before use. The current sscanf widths mitigate some overflow
+   cases, but the parser is fragile and hard to reason about for malicious
+   server-controlled listings.
+
+   Roadmap:
+   - Check all allocations before dereference.
+   - Replace strcpy/sprintf/strncpy patterns with length-aware GLib helpers or
+     explicit bounded copies.
+   - Add fuzz tests for FTP LIST parsing, especially symlink entries, huge
+     files, malformed dates, embedded NUL-like bytes, and very long names.
+
+5. Medium: URL escaping is incomplete and allocation failure can crash
+
+   urlencode only replaces %, #, space, and $. It does not encode CR/LF,
+   control characters, path delimiters that need component-level handling, or
+   all bytes that are unsafe in FTP URLs. The replace chain does not handle
+   allocation failure before passing intermediate NULL values to the next
+   replace call.
+
+   Roadmap:
+   - Replace the custom replace/urlencode helpers with a component-aware
+     escaping function, preferably from libcurl or GLib.
+   - Treat allocation failure as -ENOMEM and propagate it cleanly through FUSE
+     callbacks.
+   - Add tests for percent-encoded names and invalid byte sequences.
+
+6. Medium: Remote symlink transformation can expose host paths
+
+   transform_symlinks rewrites absolute symlink targets by prefixing the local
+   mount path. This may expose local filesystem layout and can make remote data
+   look like trusted local paths.
+
+   Roadmap:
+   - Re-evaluate whether absolute symlink rewriting should be enabled at all.
+   - Document the behavior clearly and add an option to disable it by default if
+     compatibility allows.
+   - Add tests for absolute, relative, and traversal-style symlink targets.
+
+7. Low: Debug and error reporting may leak sensitive paths or server metadata
+
+   DEBUG calls include full paths, FTP commands, remote listing data, and libcurl
+   error strings. This is useful for troubleshooting but risky when logs are
+   collected centrally.
+
+   Roadmap:
+   - Add a redaction helper for credentials and sensitive path components.
+   - Document that ftpfs_debug and verbose output should not be enabled in
+     production or shared logs.
+
+8. Low: Build and compatibility surface is broad
+
+   The tree carries old autotools/libcurl/FUSE compatibility code. Broad legacy
+   support increases security review surface and keeps obsolete protocol options
+   available.
+
+   Roadmap:
+   - Define a supported dependency baseline: libfuse3, maintained libcurl, and
+     modern TLS libraries.
+   - Remove dead FUSE 2 and legacy libcurl branches after deciding the support
+     policy.
+   - Add CI jobs for configure, make, make test, and sanitizer builds.
+
+Immediate priorities
+--------------------
+
+1. Block CR/LF/control characters in every FTP command argument before any
+   CURLOPT_POSTQUOTE use.
+2. Remove SSLv3 and modernize TLS option handling.
+3. Replace argv-based secret guidance with safer documented workflows and
+   zero password buffers after use.
+4. Add parser and path fuzzing harnesses.
+5. Enable compiler hardening and sanitizers in CI.
+
+Hardening checklist
+-------------------
+
+- Build with -Wall -Wextra and address existing warnings.
+- Add AddressSanitizer and UndefinedBehaviorSanitizer test targets.
+- Add a fuzz target for parse_dir.
+- Add unit tests for FTP command construction rejection.
+- Review all malloc/realloc/g_strdup_printf returns on security-sensitive paths.
+- Keep certificate and hostname verification enabled by default.

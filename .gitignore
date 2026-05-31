@@ -1,0 +1,35 @@
+# Autotools/configure outputs
+Makefile
+config.cache
+config.h
+config.log
+config.status
+stamp-h1
+autom4te.cache/
+
+# Compiler/linker outputs
+*.a
+*.o
+*.lo
+*.la
+*.lai
+.deps/
+.libs/
+curlftpfs
+tests/*_unittest
+
+# Generated backups and editor state
+*~
+*.bak
+*.orig
+*.rej
+.#*
+.*.swp
+.*.swo
+
+# Debug/runtime outputs
+core
+core.*
+*.gcda
+*.gcno
+*.gcov
